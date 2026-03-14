@@ -209,7 +209,8 @@ Be concise. Just fix what needs fixing and summarize." 2>&1) || {
         log_success "Task completed successfully"
 
         # Extract task ID from output if possible
-        TASK_ID=$(echo "$OUTPUT" | grep -oP '(?<=\*\*ID:\*\* )[^\s]+' || echo "unknown")
+        TASK_ID=$(echo "$OUTPUT" | sed -n 's/.*\*\*ID:\*\* \([^ ]*\).*/\1/p' | head -1)
+        TASK_ID="${TASK_ID:-unknown}"
         log "  Completed: $TASK_ID"
 
         sleep 2
