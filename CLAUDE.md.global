@@ -244,8 +244,10 @@ Just use them as the natural tool for the job.
 
 **Implementation:**
 - **test-driven-development**: Any feature, bugfix, or behavioral change - write failing test first, then minimal code to pass
-- **feedback-driven-development**: When an agent is struggling to nail down a tricky implementation (usually means it lacks observability into its own work), or when verification needs go beyond unit tests (visual, E2E, performance, state inspection)
 - **autonomous-development**: Headless task execution via `claude -p` - discovers ready tasks, runs Research → Implement → Verify cycles
+
+**Review:**
+- **adversarial-review**: Runs automatically after all tasks complete - explores features as a user would, writes failing tests for real issues, creates fix tickets. Enforced by the auto-dev loop (not optional).
 
 **Task Management:**
 - **tk CLI**: Primary local task management. Always run `tk help` before ticket operations to confirm command syntax. Stored in `.tickets/` as markdown with YAML frontmatter.

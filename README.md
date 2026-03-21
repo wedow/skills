@@ -7,6 +7,7 @@ A collection of reusable workflow patterns (skills) for Claude Code that enable 
 These skills provide structured workflows for:
 
 - **Autonomous Development** - Headless task execution with Research → Implement → Verify cycles
+- **Adversarial Review** - Post-completion QA that explores features as a user, writes failing tests, creates fix tickets
 - **Project Planning** - Comprehensive feature planning through research and interview cycles
 - **Test-Driven Development** - Red-green-refactor workflow for all implementation
 
@@ -44,7 +45,7 @@ Start a fresh Claude Code session for each skill invocation:
 4. **`plan-to-tickets`** - Convert finalized plan into self-contained tickets
 5. **`ai`** - Run the autonomous development loop until complete or blocked
 
-The loop automatically invokes `autonomous-development` and `investigate-blocker` as needed, stopping only when human input is required or all tasks are complete.
+The loop automatically invokes `autonomous-development`, `investigate-blocker`, and `adversarial-review` as needed, stopping only when human input is required or all tasks are verified complete.
 
 
 ## Skills Reference
@@ -54,8 +55,8 @@ The loop automatically invokes `autonomous-development` and `investigate-blocker
 | Skill | Description |
 |-------|-------------|
 | `autonomous-development` | Picks up tasks from tickets and executes Research → Implement → Verify cycles autonomously |
+| `adversarial-review` | Post-completion QA: explores features as a user, writes failing tests for real issues, creates fix tickets |
 | `test-driven-development` | Enforces red-green-refactor: write failing test first, then minimal code to pass |
-| `feedback-driven-development` | Designs verification mechanisms (tests, checks, feedback loops) before implementation |
 
 ### Planning Skills
 
@@ -85,7 +86,7 @@ The loop automatically invokes `autonomous-development` and `investigate-blocker
 2. project-planning   → Generate detailed feature plan
 3. reviewing-plans    → Refine until implementation-ready
 4. plan-to-tickets    → Create tickets for autonomous execution
-5. autonomous-dev     → Execute tasks (loop with `ai` command)
+5. ai                 → Execute tasks, then adversarial review before declaring done
 ```
 
 ### Running Autonomous Development

@@ -6,6 +6,8 @@ set -euo pipefail
 
 LOG_FILE="autonomous-dev-$(date +%Y%m%d-%H%M%S).log"
 ITERATION=0
+REVIEW_COUNT=0
+MAX_REVIEWS=3
 
 # Colors for output
 GREEN='\033[0;32m'
@@ -137,8 +139,47 @@ while true; do
     check_ready_work && CHECK_RESULT=0 || CHECK_RESULT=$?
 
     if [ $CHECK_RESULT -eq 1 ]; then
-        log_success "All tasks complete! 🎉"
-        break
+        # All tasks done — run adversarial review before declaring completion
+        if [ $REVIEW_COUNT -ge $MAX_REVIEWS ]; then
+            log_error "Adversarial review found issues $MAX_REVIEWS times — escalating to human"
+            send_notification "Adversarial review repeated $MAX_REVIEWS times — human review needed"
+
+            ESCALATE_OUTPUT=$(claude --dangerously-skip-permissions --model=haiku -p "Run 'tk help' first, then create a HUMAN-TASK ticket:
+
+Title: HUMAN-TASK: Adversarial review found issues $MAX_REVIEWS times - human review needed
+Description: The adversarial review skill found new issues on each of $MAX_REVIEWS review passes. This suggests a systemic problem that autonomous agents cannot resolve. A human should review the recent work, the review-created tickets, and determine the root cause.
+
+Use tk create to make the ticket." 2>&1) || true
+            echo "$ESCALATE_OUTPUT" >> "$LOG_FILE"
+            break
+        fi
+
+        ((++REVIEW_COUNT))
+        log "All tasks complete — running adversarial review (pass $REVIEW_COUNT/$MAX_REVIEWS)"
+
+        REVIEW_OUTPUT=$(claude --dangerously-skip-permissions --model=opus -p "Use adversarial-review skill" 2>&1) || {
+            log_warning "Adversarial review failed with exit code $? — treating as clean"
+            echo "$REVIEW_OUTPUT" >> "$LOG_FILE"
+            log_success "All tasks complete (review skipped due to error)"
+            break
+        }
+
+        echo "$REVIEW_OUTPUT" >> "$LOG_FILE"
+
+        if echo "$REVIEW_OUTPUT" | grep -q "EXIT_STATUS: REVIEW_CLEAN"; then
+            log_success "All tasks complete — adversarial review passed clean"
+            break
+        elif echo "$REVIEW_OUTPUT" | grep -q "EXIT_STATUS: REVIEW_ISSUES_FOUND"; then
+            log_warning "Adversarial review found issues (pass $REVIEW_COUNT/$MAX_REVIEWS) — fixing and re-reviewing"
+            sleep 2
+            continue
+        else
+            log_warning "Adversarial review returned unexpected output — treating as clean"
+            log "Last 20 lines of review output:"
+            echo "$REVIEW_OUTPUT" | tail -20 | tee -a "$LOG_FILE"
+            log_success "All tasks complete (review output unclear)"
+            break
+        fi
     elif [ $CHECK_RESULT -eq 2 ]; then
         log_warning "HUMAN-TASK detected - stopping immediately"
         send_notification "🚨 Autonomous development stopped - HUMAN-TASK requires manual intervention"

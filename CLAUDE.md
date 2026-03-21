@@ -31,8 +31,8 @@ The body contains the skill's workflow instructions.
 | Skill | Purpose |
 |-------|---------|
 | `autonomous-development` | Headless task execution via Research → Implement → Verify cycles |
+| `adversarial-review` | Post-completion QA: explores features as a user, writes failing tests, creates fix tickets |
 | `test-driven-development` | Red-green-refactor cycle for all implementation work |
-| `feedback-driven-development` | Designing verification mechanisms beyond unit tests |
 | `project-planning` | Comprehensive feature planning through research-interview cycles |
 | `reviewing-plans` | Refining plans for autonomous implementation readiness |
 | `plan-to-tickets` | Converting finalized plans to self-contained tickets |
@@ -44,10 +44,14 @@ The body contains the skill's workflow instructions.
 
 The external bash loop at `autonomous-development/scripts/autonomous-dev-loop.sh` (symlinked to `~/.local/bin/ai`) coordinates skills:
 
-1. Check for `REQUIRES-INVESTIGATION:` tasks → run `investigate-blocker`
-2. Check for regular tasks → run `autonomous-development`
-3. If only `HUMAN-TASK:` remains → stop for human input
-4. If no tasks → stop
+1. Check for `HUMAN-TASK:` → stop for human input
+2. Check for `REQUIRES-INVESTIGATION:` tasks → run `investigate-blocker`
+3. Check for regular tasks → run `autonomous-development`
+4. All tasks done → run `adversarial-review` (up to 3 passes)
+   - Issues found? → creates fix tickets, loop continues
+   - 3rd pass still finds issues? → creates `HUMAN-TASK`, stops
+   - Clean? → exit complete
+5. If no tasks and review clean → stop
 
 ## Skill Authoring
 
