@@ -157,7 +157,7 @@ Use tk create to make the ticket." 2>&1) || true
         ((++REVIEW_COUNT))
         log "All tasks complete — running adversarial review (pass $REVIEW_COUNT/$MAX_REVIEWS)"
 
-        REVIEW_OUTPUT=$(claude --dangerously-skip-permissions --model=opus -p "Use adversarial-review skill" 2>&1) || {
+        REVIEW_OUTPUT=$(claude --dangerously-skip-permissions --model=opus -p "Use adversarial-review skill. IMPORTANT: commit any new ticket files you create (git add .tickets/*.md && git commit)." 2>&1) || {
             log_warning "Adversarial review failed with exit code $? — treating as clean"
             echo "$REVIEW_OUTPUT" >> "$LOG_FILE"
             log_success "All tasks complete (review skipped due to error)"
@@ -166,18 +166,25 @@ Use tk create to make the ticket." 2>&1) || true
 
         echo "$REVIEW_OUTPUT" >> "$LOG_FILE"
 
-        if echo "$REVIEW_OUTPUT" | grep -q "EXIT_STATUS: REVIEW_CLEAN"; then
-            log_success "All tasks complete — adversarial review passed clean"
-            break
-        elif echo "$REVIEW_OUTPUT" | grep -q "EXIT_STATUS: REVIEW_ISSUES_FOUND"; then
+        # Commit any ticket files the review agent forgot to commit
+        local new_tickets
+        new_tickets=$(git ls-files --others --exclude-standard .tickets/ 2>/dev/null || true)
+        if [ -n "$new_tickets" ]; then
+            log_warning "Review agent left uncommitted tickets — committing them now"
+            git add .tickets/*.md 2>/dev/null || true
+            git commit -m "chore: commit adversarial review tickets (pass $REVIEW_COUNT)" 2>/dev/null || true
+        fi
+
+        # Check tk for actual ready work — don't trust agent text output
+        local post_review_ready
+        post_review_ready=$(tk ready 2>/dev/null || echo "")
+
+        if [ -n "$post_review_ready" ]; then
             log_warning "Adversarial review found issues (pass $REVIEW_COUNT/$MAX_REVIEWS) — fixing and re-reviewing"
             sleep 2
             continue
         else
-            log_warning "Adversarial review returned unexpected output — treating as clean"
-            log "Last 20 lines of review output:"
-            echo "$REVIEW_OUTPUT" | tail -20 | tee -a "$LOG_FILE"
-            log_success "All tasks complete (review output unclear)"
+            log_success "All tasks complete — adversarial review passed clean"
             break
         fi
     elif [ $CHECK_RESULT -eq 2 ]; then
