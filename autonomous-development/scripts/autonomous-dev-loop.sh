@@ -167,19 +167,17 @@ Use tk create to make the ticket." 2>&1) || true
         echo "$REVIEW_OUTPUT" >> "$LOG_FILE"
 
         # Commit any ticket files the review agent forgot to commit
-        local new_tickets
-        new_tickets=$(git ls-files --others --exclude-standard .tickets/ 2>/dev/null || true)
-        if [ -n "$new_tickets" ]; then
+        NEW_TICKETS=$(git ls-files --others --exclude-standard .tickets/ 2>/dev/null || true)
+        if [ -n "$NEW_TICKETS" ]; then
             log_warning "Review agent left uncommitted tickets — committing them now"
             git add .tickets/*.md 2>/dev/null || true
             git commit -m "chore: commit adversarial review tickets (pass $REVIEW_COUNT)" 2>/dev/null || true
         fi
 
         # Check tk for actual ready work — don't trust agent text output
-        local post_review_ready
-        post_review_ready=$(tk ready 2>/dev/null || echo "")
+        POST_REVIEW_READY=$(tk ready 2>/dev/null || echo "")
 
-        if [ -n "$post_review_ready" ]; then
+        if [ -n "$POST_REVIEW_READY" ]; then
             log_warning "Adversarial review found issues (pass $REVIEW_COUNT/$MAX_REVIEWS) — fixing and re-reviewing"
             sleep 2
             continue
