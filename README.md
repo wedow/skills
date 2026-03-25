@@ -14,7 +14,7 @@ These skills provide structured workflows for:
 ## Installation
 
 ```bash
-git clone https://github.com/wedow/claude-skills.git ~/.claude/skills
+git clone https://github.com/wedow/skills.git ~/.claude/skills
 cd ~/.claude/skills
 ./setup.sh
 ```
