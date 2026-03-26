@@ -40,7 +40,7 @@ Always run `tk help` first to confirm current command syntax.
 
 ## Workflow
 
-### Phase 1: Gather Context
+### Phase 1: Gather Context and Decompose
 
 **Dispatch a context-gathering subagent to:**
 
@@ -49,6 +49,13 @@ Always run `tk help` first to confirm current command syntax.
 3. Run `tk list` and `tk show <id>` for all recently completed tickets
 4. Run `git log --oneline -20` and `git diff main...HEAD` (or appropriate base branch) to see the aggregate changes
 5. Synthesize the **intent**: what was the user trying to achieve across all this work? Not what individual tickets said — what's the *goal*?
+6. **Decompose into review aspects.** Group the changes into distinct, independently reviewable aspects. Each aspect should be a coherent area that one agent can review thoroughly. Examples:
+   - "CLI argument parsing and validation" (files: cli.py, args.py)
+   - "Database migration and schema changes" (files: migrations/*, models.py)
+   - "API endpoint handlers" (files: routes/*.py)
+   - "Frontend state management" (files: src/store/*)
+
+   Keep aspects coarse — 2-4 aspects for a medium changeset, up to 6-8 for a large one. A single-file bugfix is 1 aspect. Don't split what's naturally coupled.
 
 **Subagent reports back:**
 ```
@@ -57,17 +64,22 @@ SCOPE: [which files/modules were touched]
 TICKETS_REVIEWED: [list of ticket IDs]
 PLAN_DOCS: [any plan files found]
 KEY_BEHAVIORS: [what the implementation should do, derived from tickets + plans]
+REVIEW_ASPECTS:
+  - name: [aspect name]
+    files: [relevant file paths]
+    behaviors: [what this aspect should do]
+  - name: ...
+    files: ...
+    behaviors: ...
 ```
 
 ---
 
-### Phase 2: Exploratory QA
+### Phase 2: Code Review Wave (Parallel)
 
-**This is the most important phase.** Dispatch a QA subagent that acts like a human user encountering the feature for the first time.
+**Dispatch one code review agent per aspect, all in parallel.** Code review is read-only — agents only read diffs and report findings, so they can safely run concurrently.
 
-The subagent must first figure out *how* to test, then actually test. If the project lacks the tooling to replicate what a human would do, the agent's job is to build that tooling before proceeding.
-
-**Subagent prompt must include:**
+For each aspect in REVIEW_ASPECTS, dispatch a **code review subagent:**
 
 ```
 IMPORTANT: Before starting work:
@@ -75,16 +87,76 @@ IMPORTANT: Before starting work:
 2. Read [PROJECT]/CLAUDE.md (if applicable)
 3. Only then proceed with the task
 
-You are a QA engineer testing a feature for the first time. Your goal is to
-USE the feature like a real user would, not just read the code.
+You are reviewing code changes for one aspect of a completed feature.
 
-INTENT: [from Phase 1]
-KEY_BEHAVIORS: [from Phase 1]
-SCOPE: [from Phase 1]
+OVERALL_INTENT: [from Phase 1]
+YOUR_ASPECT: [aspect name]
+YOUR_FILES: [aspect file paths]
+YOUR_BEHAVIORS: [aspect behaviors to verify]
+TICKETS_REVIEWED: [from Phase 1]
+
+Review ONLY the changes in YOUR_FILES for:
+
+1. INTENT MATCH
+   - Does the code actually implement what the tickets describe for this aspect?
+   - Are there requirements that are only partially fulfilled?
+   - Are there stated behaviors that aren't implemented at all?
+
+2. PRIME DIRECTIVE COMPLIANCE
+   - Are concerns separated or complected?
+   - Is this the simplest implementation that achieves the goal?
+   - Are there unnecessary abstractions or over-engineering?
+   - Is there duplication that should be consolidated?
+
+3. COMPOSITION ISSUES
+   - Do this aspect's changes compose correctly with adjacent aspects?
+   - Are there contradictions between how different parts were implemented?
+   - Are there shared assumptions that aren't enforced?
+
+4. OBVIOUS ROBUSTNESS GAPS
+   - Error handling for common (not exotic) failure modes
+   - Missing validation at system boundaries (user input, external APIs)
+   - NOT internal defensive coding — trust framework guarantees
+
+For each issue found, document:
+- ASPECT: [which aspect this belongs to]
+- WHAT: The specific code and the problem
+- WHY: Why this is a real issue (reference intent/tickets)
+- SEVERITY: BLOCKING or SIGNIFICANT
+- FILE: Path and line range
+
+Do NOT report: style nits, naming preferences, missing comments,
+theoretical edge cases, or issues that require exotic conditions to trigger.
+```
+
+---
+
+### Phase 3: Exploratory QA Wave (Sequential)
+
+**Dispatch one QA agent per aspect, sequentially.** QA agents run commands, build test tooling, and may write files — they need exclusive access to the working tree. Run them one at a time so each has a clean, stable environment.
+
+Each QA agent inherits any tooling committed by the previous QA agent.
+
+For each aspect in REVIEW_ASPECTS (in order), dispatch a **QA subagent:**
+
+```
+IMPORTANT: Before starting work:
+1. Read ~/CLAUDE.md (prime directive and best practices)
+2. Read [PROJECT]/CLAUDE.md (if applicable)
+3. Only then proceed with the task
+
+You are a QA engineer testing one aspect of a feature. Your goal is to
+USE this aspect like a real user would, not just read the code.
+
+OVERALL_INTENT: [from Phase 1]
+YOUR_ASPECT: [aspect name]
+YOUR_FILES: [aspect file paths]
+YOUR_BEHAVIORS: [aspect behaviors to verify]
+KEY_BEHAVIORS: [full list from Phase 1, for cross-aspect context]
 
 Your job:
 
-1. Figure out how a human actually uses this feature
+1. Figure out how a human actually uses this aspect
    - Read docs, READMEs, help text
    - Look at how tests invoke the code
    - Find entry points (CLI commands, API endpoints, UI pages)
@@ -111,7 +183,7 @@ Your job:
        intervention.
 
    - Whatever tooling you build, keep it minimal and commit it.
-     Future review passes and fix agents will use it.
+     Future QA agents and fix agents will use it.
    - If you truly cannot replicate the interaction (e.g., requires
      physical hardware), document what a human would need to do and
      flag it — don't pretend you tested something you couldn't.
@@ -125,9 +197,9 @@ Your job:
    - What inputs would a user reasonably provide?
    - NOT exotic edge cases — normal usage patterns
 
-5. Try the seams between tickets
-   - Individual tickets may be correct in isolation
-   - Do they compose properly? Does workflow A → B → C work?
+5. Check how this aspect connects to others
+   - Does this aspect's output feed correctly into other aspects?
+   - Do the seams between your aspect and adjacent ones work?
 
 6. Check error cases a user would hit
    - Missing required input
@@ -135,6 +207,7 @@ Your job:
    - NOT adversarial fuzzing — just things users do by accident
 
 For each issue found, document:
+- ASPECT: [which aspect this belongs to]
 - WHAT: What you did and what went wrong
 - EXPECTED: What should have happened (based on intent/tickets)
 - ACTUAL: What actually happened
@@ -149,59 +222,6 @@ Do NOT report style preferences, theoretical concerns, or exotic edge cases.
 
 Use available tools: run commands, use the browser for web apps, invoke CLIs,
 read output files — whatever a human QA would do. Build new tools if needed.
-```
-
----
-
-### Phase 3: Code Review
-
-**Dispatch a code review subagent.** This runs in parallel with or after Phase 2.
-
-**Subagent prompt must include:**
-
-```
-IMPORTANT: Before starting work:
-1. Read ~/CLAUDE.md (prime directive and best practices)
-2. Read [PROJECT]/CLAUDE.md (if applicable)
-3. Only then proceed with the task
-
-You are reviewing code changes for a completed feature.
-
-INTENT: [from Phase 1]
-SCOPE: [from Phase 1]
-TICKETS_REVIEWED: [from Phase 1]
-
-Review the diff (git diff main...HEAD or equivalent) for:
-
-1. INTENT MATCH
-   - Does the code actually implement what the tickets describe?
-   - Are there tickets whose requirements are only partially fulfilled?
-   - Are there stated behaviors that aren't implemented at all?
-
-2. PRIME DIRECTIVE COMPLIANCE
-   - Are concerns separated or complected?
-   - Is this the simplest implementation that achieves the goal?
-   - Are there unnecessary abstractions or over-engineering?
-   - Is there duplication that should be consolidated?
-
-3. COMPOSITION ISSUES
-   - Do the changes from different tickets work together?
-   - Are there contradictions between how different tickets were implemented?
-   - Are there shared assumptions that aren't enforced?
-
-4. OBVIOUS ROBUSTNESS GAPS
-   - Error handling for common (not exotic) failure modes
-   - Missing validation at system boundaries (user input, external APIs)
-   - NOT internal defensive coding — trust framework guarantees
-
-For each issue found, document:
-- WHAT: The specific code and the problem
-- WHY: Why this is a real issue (reference intent/tickets)
-- SEVERITY: BLOCKING or SIGNIFICANT
-- FILE: Path and line range
-
-Do NOT report: style nits, naming preferences, missing comments,
-theoretical edge cases, or issues that require exotic conditions to trigger.
 ```
 
 ---
@@ -229,12 +249,12 @@ ISSUE: [description from Phase 2 or 3]
 EXPECTED_BEHAVIOR: [what should happen]
 ACTUAL_BEHAVIOR: [what does happen]
 RELEVANT_CODE: [file paths and line ranges]
-REPRODUCTION_STEPS: [exact commands from Phase 2 finding]
-QA_TOOLING: [any test infrastructure built during Phase 2]
+REPRODUCTION_STEPS: [exact commands from the finding]
+QA_TOOLING: [any test infrastructure built during Phase 3]
 
 Requirements:
 - Use the project's existing test framework and conventions
-- If Phase 2 built test infrastructure (Playwright setup, input simulation,
+- If Phase 3 built test infrastructure (Playwright setup, input simulation,
   screenshot tooling, etc.), USE it — don't reinvent it
 - The test MUST currently fail (it encodes a real bug)
 - The test should pass once the issue is fixed
@@ -256,7 +276,7 @@ or UX issue), report back that no test is applicable and explain why.
 
 After all subagents report back, the coordinator:
 
-1. **Deduplicate** findings across phases (exploratory QA and code review may find the same issue)
+1. **Deduplicate** findings across aspects and agent types (QA and code review agents for different aspects may find the same issue)
 
 2. **Apply the rubric** one more time: for each finding, ask "Would a reasonable user encounter this within their first day?" If no, discard it.
 
