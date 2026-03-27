@@ -101,6 +101,10 @@ Continuous loop (runs until all tasks complete or human input needed):
 ai
 ```
 
+Signal controls while the loop is running:
+- **Ctrl+C** — kill the active claude instance and exit immediately
+- **Ctrl+\\** — let the current claude instance finish, then exit after the iteration completes
+
 ## Ticket System
 
 Skills use `tk` for local task management. Install from: https://github.com/wedow/ticket
