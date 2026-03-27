@@ -32,6 +32,53 @@ log_error() {
     echo -e "${RED}[$(date '+%Y-%m-%d %H:%M:%S')] ✗${NC} $*" | tee -a "$LOG_FILE"
 }
 
+# Signal handling
+# SIGINT (Ctrl+C): kill active claude instance and exit immediately
+# SIGQUIT (Ctrl+\): let current claude finish, then exit after this iteration
+
+CLAUDE_PID=""
+STOP_AFTER_CURRENT=false
+
+handle_int() {
+    echo ""
+    log_warning "Interrupted"
+    if [ -n "$CLAUDE_PID" ] && kill -0 "$CLAUDE_PID" 2>/dev/null; then
+        kill -INT "$CLAUDE_PID" 2>/dev/null
+        wait "$CLAUDE_PID" 2>/dev/null || true
+    fi
+    exit 130
+}
+
+handle_quit() {
+    echo ""
+    log_warning "Graceful stop — will exit after current iteration"
+    STOP_AFTER_CURRENT=true
+}
+
+trap handle_int INT
+trap handle_quit QUIT
+
+# Run claude, capturing output to OUTPUT global. Returns claude's exit code.
+# Uses background process + wait so signal traps aren't deferred.
+# Claude subprocess ignores SIGQUIT so Ctrl+\ only affects the loop.
+run_claude() {
+    local tmpfile
+    tmpfile=$(mktemp)
+    ( trap '' QUIT; exec claude "$@" ) > "$tmpfile" 2>&1 &
+    CLAUDE_PID=$!
+    local rc=0
+    wait "$CLAUDE_PID" || rc=$?
+    # If interrupted by a signal (rc > 128) but process still alive, re-wait
+    while [ $rc -gt 128 ] && kill -0 "$CLAUDE_PID" 2>/dev/null; do
+        rc=0
+        wait "$CLAUDE_PID" || rc=$?
+    done
+    CLAUDE_PID=""
+    OUTPUT=$(cat "$tmpfile")
+    rm -f "$tmpfile"
+    return $rc
+}
+
 # Check if there's work to do and determine which skill to invoke
 # Returns:
 #   0 = regular tasks available (use autonomous-development)
@@ -129,8 +176,14 @@ send_notification() {
 # Main loop
 log "Starting autonomous development loop"
 log "Log file: $LOG_FILE"
+log "Ctrl+C to abort | Ctrl+\\ to finish current iteration and stop"
 
 while true; do
+    if $STOP_AFTER_CURRENT; then
+        log_warning "Graceful stop requested — exiting loop"
+        break
+    fi
+
     ((++ITERATION))
     log "=== Iteration $ITERATION ==="
 
@@ -144,27 +197,27 @@ while true; do
             log_error "Adversarial review found issues $MAX_REVIEWS times — escalating to human"
             send_notification "Adversarial review repeated $MAX_REVIEWS times — human review needed"
 
-            ESCALATE_OUTPUT=$(claude --dangerously-skip-permissions --model=haiku -p "Run 'tk help' first, then create a HUMAN-TASK ticket:
+            run_claude --dangerously-skip-permissions --model=haiku -p "Run 'tk help' first, then create a HUMAN-TASK ticket:
 
 Title: HUMAN-TASK: Adversarial review found issues $MAX_REVIEWS times - human review needed
 Description: The adversarial review skill found new issues on each of $MAX_REVIEWS review passes. This suggests a systemic problem that autonomous agents cannot resolve. A human should review the recent work, the review-created tickets, and determine the root cause.
 
-Use tk create to make the ticket." 2>&1) || true
-            echo "$ESCALATE_OUTPUT" >> "$LOG_FILE"
+Use tk create to make the ticket." || true
+            echo "$OUTPUT" >> "$LOG_FILE"
             break
         fi
 
         ((++REVIEW_COUNT))
         log "All tasks complete — running adversarial review (pass $REVIEW_COUNT/$MAX_REVIEWS)"
 
-        REVIEW_OUTPUT=$(claude --dangerously-skip-permissions --model=opus -p "Use adversarial-review skill. IMPORTANT: commit any new ticket files you create (git add .tickets/*.md && git commit)." 2>&1) || {
-            log_warning "Adversarial review failed with exit code $? — treating as clean"
-            echo "$REVIEW_OUTPUT" >> "$LOG_FILE"
+        run_claude --dangerously-skip-permissions --model=opus -p "Use adversarial-review skill. IMPORTANT: commit any new ticket files you create (git add .tickets/*.md && git commit)." || {
+            log_warning "Adversarial review failed — treating as clean"
+            echo "$OUTPUT" >> "$LOG_FILE"
             log_success "All tasks complete (review skipped due to error)"
             break
         }
 
-        echo "$REVIEW_OUTPUT" >> "$LOG_FILE"
+        echo "$OUTPUT" >> "$LOG_FILE"
 
         # Commit any ticket files the review agent forgot to commit
         NEW_TICKETS=$(git ls-files --others --exclude-standard .tickets/ 2>/dev/null || true)
@@ -187,7 +240,7 @@ Use tk create to make the ticket." 2>&1) || true
         fi
     elif [ $CHECK_RESULT -eq 2 ]; then
         log_warning "HUMAN-TASK detected - stopping immediately"
-        send_notification "🚨 Autonomous development stopped - HUMAN-TASK requires manual intervention"
+        send_notification "Autonomous development stopped - HUMAN-TASK requires manual intervention"
 
         # Show which tasks need human input
         tk ready | grep "HUMAN-TASK:" | tee -a "$LOG_FILE" || true
@@ -199,7 +252,7 @@ Use tk create to make the ticket." 2>&1) || true
         BLOCKED_COUNT=$(tk blocked 2>/dev/null | wc -l)
         log "Found $BLOCKED_COUNT blocked tasks - spawning reviewer to check dependencies"
 
-        REVIEW_OUTPUT=$(claude --dangerously-skip-permissions --model=haiku -p "Review blocked tickets and fix dependency issues.
+        run_claude --dangerously-skip-permissions --model=haiku -p "Review blocked tickets and fix dependency issues.
 
 For each ticket shown by 'tk blocked':
 1. Run 'tk show <id>' to see its dependencies
@@ -216,33 +269,33 @@ After reviewing all blocked tasks, report:
 - How many still have legitimate open dependencies
 - Any new tasks created for investigations
 
-Be concise. Just fix what needs fixing and summarize." 2>&1) || {
+Be concise. Just fix what needs fixing and summarize." || {
             log_warning "Blocked task review failed, will retry next iteration"
             sleep 5
             continue
         }
 
-        echo "$REVIEW_OUTPUT" >> "$LOG_FILE"
+        echo "$OUTPUT" >> "$LOG_FILE"
         log "Blocked task review complete - rechecking for ready work"
         sleep 2
         continue
     elif [ $CHECK_RESULT -eq 4 ]; then
         # REQUIRES-INVESTIGATION tasks available - use investigate-blocker skill
         log "REQUIRES-INVESTIGATION tasks detected - using investigate-blocker skill"
-        OUTPUT=$(claude --dangerously-skip-permissions --model=opus -p "Use investigate-blocker skill" 2>&1) || {
-            log_error "investigate-blocker skill failed with exit code $?"
+        run_claude --dangerously-skip-permissions --model=opus -p "Use investigate-blocker skill" || {
+            log_error "investigate-blocker skill failed"
             echo "$OUTPUT" | tee -a "$LOG_FILE"
-            send_notification "🔥 Investigation skill error - loop continuing"
+            send_notification "Investigation skill error - loop continuing"
             sleep 5
             continue
         }
     else
         # Regular tasks available - use autonomous-development skill
         log "Running: claude -p \"Use autonomous-development skill\""
-        OUTPUT=$(claude --dangerously-skip-permissions --model=opus -p "Run your autonomous-development skill. Ensure you always task separate verification subagents immediately following the completion of an implementation subagent task." 2>&1) || {
-            log_error "Claude command failed with exit code $?"
+        run_claude --dangerously-skip-permissions --model=opus -p "Run your autonomous-development skill. Ensure you always task separate verification subagents immediately following the completion of an implementation subagent task." || {
+            log_error "Claude command failed"
             echo "$OUTPUT" | tee -a "$LOG_FILE"
-            send_notification "🔥 Autonomous development error - claude command failed"
+            send_notification "Autonomous development error - claude command failed"
             exit 1
         }
     fi
@@ -272,7 +325,7 @@ Be concise. Just fix what needs fixing and summarize." 2>&1) || {
             echo "$CREATED_TASKS" | tee -a "$LOG_FILE"
         fi
 
-        send_notification "⏸️  Autonomous development needs human input - check created P0 tasks"
+        send_notification "Autonomous development needs human input - check created P0 tasks"
 
         # Continue loop - other tasks might be ready
         sleep 5
@@ -301,19 +354,13 @@ Be concise. Just fix what needs fixing and summarize." 2>&1) || {
             echo "$ERROR_INFO" | tee -a "$LOG_FILE"
         fi
 
-        send_notification "🔥 Autonomous development fatal error - loop stopped"
+        send_notification "Autonomous development fatal error - loop stopped"
         exit 1
 
     else
         log_warning "Unable to parse exit status from output"
         log "Last 20 lines of output:"
         echo "$OUTPUT" | tail -20 | tee -a "$LOG_FILE"
-
-        # # Might be an incomplete run or unexpected format
-        # # Be cautious and exit
-        # log_error "Stopping loop due to unexpected output format"
-        # send_notification "⚠️  Autonomous development stopped - unexpected output format"
-        # exit 1
 
         # dev loop skill should be able to recover from failures. continue and let next iteration figure it out
         sleep 10
