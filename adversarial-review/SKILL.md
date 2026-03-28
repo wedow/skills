@@ -124,6 +124,13 @@ For each issue found, document:
 - WHY: Why this is a real issue (reference intent/tickets)
 - SEVERITY: BLOCKING or SIGNIFICANT
 - FILE: Path and line range
+- PATTERN_CLASS: Name the general class of bug this represents.
+  Examples: "unsynchronized access to shared state", "missing validation
+  on deserialized/recovered data", "resource cleanup skipped on error
+  path", "caller assumes object lifetime exceeds actual scope". Think:
+  if I grep the codebase for this pattern, would I find more instances?
+- ESTIMATED_SCOPE: How many similar instances likely exist? (1 = isolated,
+  2-5 = check nearby code, 5+ = systematic audit needed)
 
 Do NOT report: style nits, naming preferences, missing comments,
 theoretical edge cases, or issues that require exotic conditions to trigger.
@@ -216,6 +223,10 @@ For each issue found, document:
   or scripts, not prose descriptions. Another agent will use these steps to
   verify the fix. If you can't express it as repeatable commands, the finding
   isn't actionable.
+- PATTERN_CLASS: Name the general class of bug this represents (same as
+  Phase 2 format). Think: "is this a one-off, or an instance of a pattern
+  that likely recurs elsewhere in the codebase?"
+- ESTIMATED_SCOPE: How many similar instances likely exist?
 
 Discard anything that doesn't meet the severity threshold.
 Do NOT report style preferences, theoretical concerns, or exotic edge cases.
@@ -280,7 +291,20 @@ After all subagents report back, the coordinator:
 
 2. **Apply the rubric** one more time: for each finding, ask "Would a reasonable user encounter this within their first day?" If no, discard it.
 
-3. **Create tickets** for genuine issues. Each ticket MUST include enough detail for a fix agent to understand, reproduce, and verify the fix without asking questions:
+3. **Group by root cause pattern.** This is the critical step that prevents fix-one-find-another spirals across review rounds.
+
+   Collect all PATTERN_CLASS values from the findings. Group findings that share the same pattern class. For each group:
+
+   - If **1 finding** in the group → isolated bug, create a single-instance ticket
+   - If **2+ findings** in the same pattern class → this is a **systematic issue**. Create ONE pattern-scoped ticket, not N individual tickets. The ticket must require the fix agent to **audit first, then fix all instances** in a single pass.
+
+   **Example of what goes wrong without this step:** Review finds "missing null check in handler A." Ticket says "add null check to handler A." Agent fixes that one spot. Next review finds "missing null check in handler B" — same pattern class, different location. Another narrow ticket. This repeats across review rounds until all instances are found one at a time.
+
+   **What should happen instead:** Review finds 2 missing null checks. Both are pattern class "missing validation on deserialized input." One ticket: "Audit all handlers that deserialize input for missing validation, fix all instances." Done in one pass, no second review round needed.
+
+4. **Create tickets.** Use the appropriate template based on whether the finding is isolated or pattern-scoped:
+
+   **For isolated findings (single instance, no pattern):**
    ```bash
    tk create "Fix: [clear description of the issue]" \
      --priority [p0 for BLOCKING, p1 for SIGNIFICANT] \
@@ -300,7 +324,37 @@ After all subagents report back, the coordinator:
    [Paths and line ranges]"
    ```
 
-4. **Do NOT create tickets for:**
+   **For pattern-scoped findings (2+ instances of same root cause):**
+   ```bash
+   tk create "Audit and fix: [pattern class name]" \
+     --priority [highest priority among grouped findings] \
+     --description "## Pattern
+   [Name and description of the bug pattern — what makes an instance of this class]
+
+   ## Known Instances
+   [List each finding: file, line, specific manifestation]
+
+   ## Audit Strategy
+   [Grep/search commands to find ALL instances of this pattern, not just the known ones.
+   Example: grep -rn 'JSON.parse' src/handlers/ to find all deserialization sites without validation]
+
+   ## Required Workflow
+   1. Run the audit strategy commands to find ALL instances (known + unknown)
+   2. For each instance, determine if it needs the fix (some may be safe — e.g., single-threaded init)
+   3. Fix all instances that need it in one pass
+   4. Run tests to verify
+
+   ## Failing Test
+   [Path to the committed failing test for at least one known instance]
+
+   ## Verification
+   [Command to run that currently fails and should pass after all fixes]
+
+   ## Known Instance Details
+   [For each known instance: reproduction steps, expected vs actual]"
+   ```
+
+5. **Do NOT create tickets for:**
    - Style or naming preferences
    - Theoretical edge cases
    - Performance concerns without measurement
